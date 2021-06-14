@@ -1,0 +1,353 @@
+
+---
+title: "Hotel_Booking_Analysis"
+author: "RV"
+date: "10/07/2020"
+output: word_document
+---
+
+
+```{r libraries}
+#loading libraries
+library(ggplot2)
+library(dplyr)
+library(scales)
+library(tidyverse)
+library(readr)
+library(zeallot)
+library(countrycode)
+library(ISLR)
+library(caret)
+library(rpart)
+library(rpart.plot)
+library(rattle)
+library(mice)
+library(missForest)
+library(VIM)
+library(doParallel)
+
+```
+
+```{r}
+
+hotel_data <- read_csv ( "/Users/kratipatidar/Desktop/mis_620/hotel_bookings.csv")
+
+```
+
+
+```{r data segmentation}
+data_2015 <- subset(hotel_data, arrival_date_year == 2015)
+head(data_2015)
+
+```
+```{r looking at the data, descriptive statistics}
+library(e1071)
+library(Hmisc)
+describe(data_2015)
+```
+
+```{r Visualizing Distribution by Hotel Type}
+
+# Visualize the distribution
+ggplot(data = data_2015, aes(x = hotel)) +
+  geom_bar(stat = "count") +
+  labs(title = "Booking Request by Hotel type",
+       x = "Hotel type",
+       y = "No. of bookings") +
+  theme_classic() + scale_color_brewer(palette = "Set2")
+
+```
+
+
+```{r Checking Hotel Type By Cancelation}
+
+# Check the distribution of hotel type for cancellation
+table(data_2015$is_canceled, data_2015$hotel)
+
+```
+
+```{r Visualizing Cancelations }
+# Visualize the cancellation by hotel type
+ggplot(data = hotel_data,
+       aes(
+         x = hotel,
+         y = prop.table(stat(count)),
+         fill = factor(is_canceled),
+         label = scales::percent(prop.table(stat(count)))
+       )) +
+  geom_bar(position = position_dodge()) +
+  geom_text(
+    stat = "count",
+    position = position_dodge(.9),
+    vjust = -0.5,
+    size = 3
+  ) +
+  scale_y_continuous(labels = scales::percent) +
+  labs(title = "Cancellation Status by Hotel Type",
+       x = "Hotel Type",
+       y = "Count") +
+  theme_classic() +
+  scale_fill_discrete(
+    name = "Booking Status",
+    breaks = c("0", "1"),
+    labels = c("Cancelled", "Not Cancelled")
+  )
+
+```
+```{r Cancelation Ratio By Lead Time }
+# Cancellation ratio by Hotel Type based on the lead time. Lead time is the time gap between
+# Booking made and the actual date of check in. We will visualize the data by using BoxPlot
+
+ggplot(data = data_2015, aes(
+  x = hotel,
+  y = lead_time,
+  fill = factor(is_canceled)
+)) +
+  geom_boxplot(position = position_dodge()) +
+  labs(
+    title = "Cancellation By Hotel Type",
+    subtitle = "Based on Lead Time",
+    x = "Hotel Type",
+    y = "Lead Time (Days)"
+  ) +
+  scale_fill_discrete(
+    name = "Booking Status",
+    breaks = c("0", "1"),
+    labels = c("Cancelled", "Not Cancelled")
+  ) + theme_light()
+
+```
+
+```{r Booking Status by Month}
+
+ggplot(data_2015, aes(arrival_date_month, fill = factor(is_canceled))) +
+  geom_bar() + geom_text(stat = "count", aes(label = ..count..), hjust = 1) +
+  coord_flip() + scale_fill_discrete(
+    name = "Booking Status",
+    breaks = c("0", "1"),
+    label = c("Cancelled", "Not Cancelled")
+  ) +
+  labs(title = "Booking Status by Month",
+       x = "Month",
+       y = "Count") + theme_bw()
+
+
+```
+
+```{r checking for missing values}
+f=function(x){any(is.na(x))}
+check.na=apply(data_2015,2,f);
+check.na 
+#missing values observed in the children column
+```
+```{r dealing with missing values}
+
+#checking for complete cases
+
+cc(data_2015) 
+nrow(cc(data_2015))
+
+#now we check for the incomplete values in the dataset
+
+ic(data_2015)
+nrow(ic(data_2015))
+
+#it turns out four rows in the dataset are incomplete, they contain missing records for children column
+#it would make sense to replace these missing values with the values from the corresponding babies column of this dataset
+
+n <- length(data_2015$children)
+for (i in 1:n) {
+  if (is.na(data_2015$children[i]))
+    data_2015$children[i] <- data_2015$babies[i]
+}
+
+#checking for misssing values again
+
+ic(data_2015)
+nrow(ic(data_2015))
+
+```
+```{r looking at null columns}
+library(skimr)
+skim(data_2015)
+
+```
+```{r feature engineering}
+# Here, we add two new columns to the dataframe, to help in our analysis process
+data_2015 <- data_2015 %>% 
+  mutate(stay_nights_total = stays_in_weekend_nights + stays_in_week_nights,
+       stay_cost_total = adr * stay_nights_total)
+```
+
+```{r removing redundant columns}
+#There are columns with null values, that aren't important or relevant from analyis point of view as well. Added to these columns, other columns have too many dustinct values that would hinder the modeling process. So, we drop those columns for our analysis.
+drop_cols = c("agent", "company", "arrival_date_month", "stays_in_weekend_nights", "stays_in_week_nights", "reservation_date", "country", "arrival_date_year", "arrival_date_week_number", "arrival_date_day_of_month")
+
+data_2015 <- data_2015[ , !(names(data_2015) %in% drop_cols)]
+head(data_2015)
+```
+
+```{r factoring}
+
+# converting categorical values as factors
+data_2015[sapply(data_2015, is.character)] <- lapply(data_2015[sapply(data_2015, is.character)], as.factor)
+str(data_2015)
+summary(data_2015)
+
+```
+```{r converting the dependent variable, "is_canceled" to factor}
+data_2015<-data_2015%>%
+  mutate(is_canceled=as.factor(is_canceled))
+```
+
+```{r looking at dataframe briefly again}
+head(data_2015)
+```
+
+```{r remove the dependent variable for further processing}
+ 
+data_2015_iv <- data_2015[, -2]
+head(data_2015_iv)
+```
+
+```{r dummy coding}
+
+#dummy coding 
+dummies <- dummyVars( ~ ., data = data_2015_iv)
+head(predict(dummies, newdata = data_2015_iv))
+
+data_dc <- as.data.frame(predict(dummies, data_2015_iv))
+head(data_dc)
+
+```
+
+```{r finding highly correllated predictors}
+library(corrplot)
+##remove highly correlated variables
+
+#first create correlation matrix of variables
+corr_matrix <-  cor(data_dc)
+
+#summarize the correlations some very high correlations
+summary(corr_matrix[upper.tri(corr_matrix)])
+
+#identified variables with correlation .75 or higher
+high_corr <- findCorrelation(corr_matrix, cutoff = .75)
+high_corr
+
+#filter out these variables from dataset
+filtered_data <- data_dc[,-high_corr]
+
+#create new correlation matrix to verify
+corr_matrix_2 <- cor(filtered_data)
+summary(corr_matrix_2[upper.tri(corr_matrix_2)]) #no correlations greater than .75
+
+```
+```{r looking at filtered data}
+head(filtered_data)
+```
+
+```{r Pre-Processing, Centering, Scaling and Removing non-zero variance}
+
+preprocessed_data <- preProcess(filtered_data, method = c("center", "scale", "nzv"))
+preprocessed_data
+
+transformed_data <- predict(preprocessed_data, newdata = filtered_data)
+head(transformed_data)
+
+
+```
+
+
+```{r Copying back the dependent variable}
+transformed_data$is_canceled <- data_2015$is_canceled
+head(transformed_data)
+
+```
+```{r Train-Test split}
+set.seed(3456)
+train_index <- createDataPartition(transformed_data$is_canceled, p = .8, 
+                                  list = FALSE, 
+                                  times = 1)
+head(train_index)
+
+#create training set subset (80%)
+data_train <- transformed_data[ train_index,]
+
+#create training set subset (20%)
+data_test  <- transformed_data[-train_index,]
+
+```
+```{r looking at training set}
+head(data_train)
+```
+
+```{r Model Fitting- Logistic Regression}
+library(pROC)
+
+levels(data_train$is_canceled) <- c("first_class", "second_class")
+#setup control function for resampling and binary classification performance
+#using 10 fold cross validation
+ctrl <- trainControl(method = "cv", number=5, summaryFunction=twoClassSummary,
+                     classProbs=T, savePredictions=T) #saving predictions from each resample fold
+
+##logistic regression
+set.seed(199)#ALWAYS USE same SEED ACROSS trains to ensure identical cv folds
+train_log <-  train(is_canceled ~ . , data= data_train, method="glm", family="binomial", metric="ROC",                                                                                trControl=ctrl, control= list(maxit = 50))
+
+summary(train_log)
+varImp(train_log)
+train_log
+
+```
+
+```{r knn}
+#k nearest neighbors classification
+set.seed(199) 
+train_knn <-  train(is_canceled ~ ., data=data_train, method="knn", metric="ROC", trControl=ctrl, tuneLength=10) #let caret decide 10 best parameters to search
+train_knn
+plot(train_knn)
+getTrainPerf(train_knn)
+
+confusionMatrix(train_knn$pred$pred, train_knn$pred$obs) #make sure to select resamples only for optimal parameter of K
+
+
+```
+```{r Random Forest}
+ctrl <- trainControl(method="cv", number=5)
+
+#random forest
+set.seed(199)
+train_rf <- train(is_canceled ~ ., data=data_train, 
+                     method="rf",tuneLength=4,
+                     trControl=ctrl)
+train_rf
+
+```
+
+```{r Logistic Regression Testing Prediction }
+levels(data_test$is_canceled) <- c("first_class", "second_class")
+#calculate resampled accuracy/confusion matrix using extracted predictions from resampling
+confusionMatrix(train_log$pred$pred, train_log$pred$obs) #take averages
+
+#predict probabilities on test set with log trained model
+test.pred.prob <- predict(train_log, data_test, type="prob")
+test.pred.class <- predict(train_log, data_test) #predict classes with default .5 cutoff
+
+#calculate performance with confusion matrix
+confusionMatrix(test.pred.class, data_test$is_canceled)
+
+```
+```{r plotting performance metrics for the models}
+#lets compare all resampling approaches
+train_models <- list("logit"=train_log,
+                      "knn"=train_knn)
+train_resamples = resamples(train_models)
+
+
+#plot performance comparisons
+bwplot(train_resamples, metric="ROC") 
+bwplot(train_resamples, metric="Sens") #predicting default dependant on threshold
+bwplot(train_resamples, metric="Spec") 
+
+```
